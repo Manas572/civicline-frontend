@@ -7,13 +7,14 @@ import DriftWall from './components/DriftWall.jsx'
 import TiltedCard from './components/TiltedCard.jsx'
 import heroImage from './assets/hero.png'
 import { useAuth } from './auth/useAuth.js'
+import { authClient } from './auth/neonAuth.js'
 import { api, apiBlob, API_BASE as API } from './lib/api.js'
 
 const statusNames = { awaiting_review: 'Awaiting review', submitted: 'Submitted', assigned: 'Assigned', in_progress: 'In progress', resolved: 'Resolved', reopened: 'Reopened' }
 const issueNames = { pothole: 'Pothole', water_leak: 'Water leak', garbage: 'Waste & garbage', streetlight: 'Streetlight', bridge_crack: 'Bridge crack / damage', other: 'Other issue', not_civic: 'Not a civic issue' }
 const departments = ['Roads', 'Roads & Bridges', 'Water', 'Sanitation', 'Electrical', 'Triage desk']
 const issues = ['pothole', 'water_leak', 'garbage', 'streetlight', 'bridge_crack', 'other', 'not_civic']
-const adminPaths = new Set(['/admin', '/admin/complaints', '/admin/review', '/admin/department', '/admin/map', '/admin/wards', '/admin/analytics', '/admin/routing'])
+const adminPaths = new Set(['/admin', '/admin/complaints', '/admin/review', '/admin/department', '/admin/map', '/admin/wards', '/admin/analytics', '/admin/routing', '/admin/users'])
 const wallItems = [
   ['Roads in focus', 1015], ['Shared spaces', 1025], ['A safer crossing', 1039], ['Cleaner blocks', 1043],
   ['Water watch', 1044], ['Street lights', 1050], ['Open sidewalks', 1062], ['Ward 04', 1069],
@@ -45,7 +46,7 @@ function sectionForPath(pathname) {
   return ({
     '/admin': 'Overview', '/admin/complaints': 'All reports', '/admin/review': 'Review queue',
     '/admin/department': 'Department queue', '/admin/map': 'Public map', '/admin/wards': 'Ward leaderboard',
-    '/admin/analytics': 'Insights', '/admin/routing': 'Routing rules',
+    '/admin/analytics': 'Insights', '/admin/routing': 'Routing rules', '/admin/users': 'User management',
   })[pathname] || 'Overview'
 }
 
@@ -53,7 +54,7 @@ function pathForSection(section) {
   return ({
     Overview: '/admin', 'All reports': '/admin/complaints', 'Review queue': '/admin/review',
     'Department queue': '/admin/department', 'Public map': '/admin/map',
-    'Ward leaderboard': '/admin/wards', Insights: '/admin/analytics', 'Routing rules': '/admin/routing',
+    'Ward leaderboard': '/admin/wards', Insights: '/admin/analytics', 'Routing rules': '/admin/routing', 'User management': '/admin/users',
   })[section] || '/admin'
 }
 
@@ -147,7 +148,7 @@ function OperationsApp({ navigate: routeNavigate, pathname }) {
       <div className="workspace"><span className="workspace-dot" /> CITY OPERATIONS <span className="chevron">⌄</span></div>
       <div className="nav-label">WORKSPACE</div>
       <nav className="nav">
-        {[['Overview', 'grid'], ['Public map', 'pin'], ['All reports', 'inbox'], ['Review queue', 'alert'], ['Department queue', 'inbox'], ['Ward leaderboard', 'chart'], ['Insights', 'chart'], ['Routing rules', 'grid']].map(([label, icon]) => <button key={label} className={`nav-link ${section === label ? 'active' : ''}`} onClick={() => navigate(label)}><Icon name={icon} />{label}{label === 'Review queue' && queue.length > 0 && <span className="nav-count">{queue.length}</span>}</button>)}
+        {[['Overview', 'grid'], ['Public map', 'pin'], ['All reports', 'inbox'], ['Review queue', 'alert'], ['Department queue', 'inbox'], ['Ward leaderboard', 'chart'], ['Insights', 'chart'], ['Routing rules', 'grid'], ['User management', 'grid']].map(([label, icon]) => <button key={label} className={`nav-link ${section === label ? 'active' : ''}`} onClick={() => navigate(label)}><Icon name={icon} />{label}{label === 'Review queue' && queue.length > 0 && <span className="nav-count">{queue.length}</span>}</button>)}
       </nav>
       <div className="sidebar-bottom"><div className="help-card"><span className="help-icon"><Icon name="alert" /></span><strong>Need a hand?</strong><p>Find guidance for reviewing community reports.</p><a href="#guide" onClick={(e) => e.preventDefault()}>View help center <Icon name="arrow" size={14} /></a></div><div className="profile"><div className="avatar">{(user.name || user.email || 'AD').slice(0, 2).toUpperCase()}</div><div><strong>{user.name || user.email}</strong><small>Authority staff</small></div><button className="more signout-mini" onClick={() => { void logout().then(() => routeNavigate('/login')) }}>↗</button></div></div>
     </aside>
@@ -162,11 +163,20 @@ function OperationsApp({ navigate: routeNavigate, pathname }) {
       {section === 'Ward leaderboard' && <WardLeaderboard data={publicDash} onView={openTicket} />}
       {section === 'Insights' && <Insights summary={summary} tickets={tickets} publicDash={publicDash} busy={busy} />}
       {section === 'Routing rules' && <RoutingRules />}
+      {section === 'User management' && <AdminUsers />}
     </main>
     {selected && <TicketModal ticket={selected} onClose={() => setSelected(null)} onUpdated={() => { setSelected(null); refresh() }} />}
     {showReport && <ReportModal onClose={() => setShowReport(false)} onCreated={(ticket) => { setShowReport(false); refresh(); setSection('All reports'); openTicket(ticket) }} />}
   </div>
 }
+function AdminUsers() {
+  const [data,setData]=useState({items:[],total:0,admins:0,citizens:0}),[search,setSearch]=useState(''),[role,setRole]=useState(''),[busy,setBusy]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[pending,setPending]=useState(null)
+  const load=useCallback(async()=>{setBusy(true);setError('');try{const q=new URLSearchParams();if(search.trim())q.set('search',search.trim());if(role)q.set('role',role);const [appUsers,neonUsers]=await Promise.all([api(`/api/admin/users?${q}`),authClient.admin.listUsers({query:{limit:500,offset:0}})]);if(neonUsers.error)throw new Error(neonUsers.error.message||'Neon Auth could not return the user directory.');const directory=neonUsers.data?.users||[];const roles=new Map((appUsers.items||[]).map(u=>[u.user_id,u]));const merged=directory.map(u=>{const local=roles.get(u.id);return {user_id:u.id,name:u.name||local?.name,email:u.email||local?.email,role:local?.role||'PUBLIC',created_at:u.createdAt||local?.created_at}}).filter(u=>(!role||u.role===role)&&(!search.trim()||`${u.name||''} ${u.email||''} ${u.user_id}`.toLowerCase().includes(search.trim().toLowerCase())));const admins=merged.filter(u=>u.role==='ADMIN').length;setData({...appUsers,items:merged,total:merged.length,admins,citizens:merged.length-admins})}catch(e){setError(e.message)}finally{setBusy(false)}},[search,role])
+  useEffect(()=>{void load()},[load])
+  async function changeRole(){if(!pending)return;setSaving(true);setError('');try{await api(`/api/admin/users/${encodeURIComponent(pending.user_id)}/role`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:pending.role})});setNotice('User role updated.');setPending(null);await load()}catch(e){setError(e.message)}finally{setSaving(false)}}
+  return <div className="page-wrap"><PageTitle eyebrow="ADMINISTRATION" title="User management" description="Manage CivicLine identities that have signed in to this application." />{error&&<div className="inline-error">{error}</div>}{notice&&<div className="auth-notice">{notice}</div>}<div className="metric-grid"><Metric label="Known users" value={data.total}/><Metric label="Administrators" value={data.admins}/><Metric label="Citizens" value={data.citizens}/></div><section className="panel reports-panel"><div className="panel-head"><input aria-label="Search users" placeholder="Search name, email, or ID" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="Filter users by role" value={role} onChange={e=>setRole(e.target.value)}><option value="">All roles</option><option value="PUBLIC">Citizen</option><option value="ADMIN">Admin</option></select><button className="secondary-button" onClick={()=>void load()}>Refresh</button></div>{busy?<div className="empty-small">Loading users…</div>:!data.items.length?<div className="empty-small">No matching users.</div>:<div className="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>User ID</th><th>Role</th><th>Registered</th><th>Action</th></tr></thead><tbody>{data.items.map(u=><tr key={u.user_id}><td>{u.name||'—'}</td><td>{u.email||'—'}</td><td>{u.user_id}</td><td><Badge>{u.role==='PUBLIC'?'CITIZEN':u.role}</Badge></td><td>{u.created_at?shortDate(u.created_at):'—'}</td><td><button className="table-action" onClick={()=>setPending({user_id:u.user_id,name:u.name||u.email||u.user_id,role:u.role==='ADMIN'?'PUBLIC':'ADMIN'})}>{u.role==='ADMIN'?'Demote to Citizen':'Promote to Admin'}</button></td></tr>)}</tbody></table></div>}</section>{pending&&<div className="overlay"><section className="modal"><h2>Confirm role change</h2><p>Change {pending.name} to {pending.role==='ADMIN'?'ADMIN':'CITIZEN'}?</p><div className="modal-foot"><button className="secondary-button" disabled={saving} onClick={()=>setPending(null)}>Cancel</button><button className="primary-button" disabled={saving} onClick={()=>void changeRole()}>{saving?'Updating…':'Confirm'}</button></div></section></div>}</div>
+}
+
 function PageTitle({ eyebrow, title, description, action }) { return <div className="page-title"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div> }
 function Overview({ summary, tickets, queue, publicDash, busy, onReport, onView, onNavigate }) {
   const recent = tickets.slice(0, 5), total = summary?.total_real_tickets || 0
